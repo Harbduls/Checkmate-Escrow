@@ -1223,3 +1223,20 @@ fn test_submit_result_blocked_when_paused() {
     let result = client.try_submit_result(&id, &Winner::Player1, &oracle);
     assert_eq!(result, Err(Ok(Error::ContractPaused)));
 }
+
+#[test]
+fn test_create_match_rejects_self_match() {
+    let (env, contract_id, _oracle, player1, _player2, token, _admin) = setup();
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    let result = client.try_create_match(
+        &player1,
+        &player1,
+        &100,
+        &token,
+        &String::from_str(&env, "self_match"),
+        &Platform::Lichess,
+    );
+
+    assert_eq!(result, Err(Ok(Error::InvalidPlayers)));
+}
