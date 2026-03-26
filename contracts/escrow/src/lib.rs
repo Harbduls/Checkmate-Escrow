@@ -11,6 +11,12 @@ use types::{DataKey, Match, MatchState, Platform, Winner};
 const MATCH_TTL_LEDGERS: u32 = 518_400;
 
 /// Maximum allowed byte length for a game_id string.
+///
+/// Platform-specific formats:
+/// - Lichess:      8 alphanumeric characters (e.g. `"abcd1234"`)
+/// - Chess.com:    numeric string, typically 7–12 digits (e.g. `"123456789"`)
+///
+/// Both formats fit well within this limit.
 const MAX_GAME_ID_LEN: u32 = 64;
 
 #[contract]
@@ -58,6 +64,21 @@ impl EscrowContract {
     }
 
     /// Create a new match. Both players must call `deposit` before the game starts.
+    ///
+    /// # Parameters
+    /// - `game_id`: The platform-specific game identifier. Must be ≤ 64 bytes.
+    ///   - **Lichess**: 8-character alphanumeric string (e.g. `"abcd1234"`).
+    ///     Taken from the game URL: `https://lichess.org/<game_id>`
+    ///   - **Chess.com**: numeric string, typically 7–12 digits (e.g. `"123456789"`).
+    ///     Taken from the game URL: `https://www.chess.com/game/live/<game_id>`
+    ///   Passing an ID from the wrong platform or a malformed ID will not be
+    ///   rejected on-chain, but the oracle will fail to verify the result.
+    /// - `platform`: Must match the platform the `game_id` was issued by.
+    ///   Use `Platform::Lichess` or `Platform::ChessDotCom` accordingly.
+    ///
+    /// # Errors
+    /// Returns `Error::InvalidGameId` if `game_id` exceeds `MAX_GAME_ID_LEN` (64 bytes).
+    /// Returns `Error::DuplicateGameId` if the same `game_id` has already been used.
     pub fn create_match(
         env: Env,
         player1: Address,
@@ -85,6 +106,10 @@ impl EscrowContract {
         }
         if game_id.len() > MAX_GAME_ID_LEN {
             return Err(Error::InvalidGameId);
+        }
+
+        if env.storage().persistent().has(&DataKey::GameId(game_id.clone())) {
+            return Err(Error::DuplicateGameId);
         }
 
         let id: u64 = env
@@ -120,6 +145,7 @@ impl EscrowContract {
         // Guard against u64 overflow in release mode where wrapping would occur silently
         let next_id = id.checked_add(1).ok_or(Error::Overflow)?;
         env.storage().instance().set(&DataKey::MatchCount, &next_id);
+        env.storage().persistent().set(&DataKey::GameId(m.game_id.clone()), &true);
 
         env.events().publish(
             (Symbol::new(&env, "match"), symbol_short!("created")),
@@ -148,6 +174,12 @@ impl EscrowContract {
             .get(&DataKey::Match(match_id))
             .ok_or(Error::MatchNotFound)?;
 
+        if m.state == MatchState::Cancelled {
+            return Err(Error::MatchCancelled);
+        }
+        if m.state == MatchState::Completed {
+            return Err(Error::MatchCompleted);
+        }
         if m.state != MatchState::Pending {
             return Err(Error::InvalidState);
         }
@@ -306,6 +338,52 @@ impl EscrowContract {
 
         env.events().publish(
             (Symbol::new(&env, "match"), symbol_short!("cancelled")),
+            match_id,
+        );
+
+        Ok(())
+    }
+
+    /// Expire a pending match that has not been fully funded within MATCH_TIMEOUT_LEDGERS.
+    /// Anyone can call this; funds are returned to whoever deposited.
+    pub fn expire_match(env: Env, match_id: u64) -> Result<(), Error> {
+        let mut m: Match = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Match(match_id))
+            .ok_or(Error::MatchNotFound)?;
+
+        if m.state != MatchState::Pending {
+            return Err(Error::InvalidState);
+        }
+
+        let elapsed = env.ledger().sequence().saturating_sub(m.created_ledger);
+
+        if elapsed < MATCH_TTL_LEDGERS {
+            return Err(Error::MatchNotExpired);
+        }
+
+        let client = token::Client::new(&env, &m.token);
+
+        if m.player1_deposited {
+            client.transfer(&env.current_contract_address(), &m.player1, &m.stake_amount);
+        }
+        if m.player2_deposited {
+            client.transfer(&env.current_contract_address(), &m.player2, &m.stake_amount);
+        }
+
+        m.state = MatchState::Cancelled;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Match(match_id), &m);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Match(match_id),
+            MATCH_TTL_LEDGERS,
+            MATCH_TTL_LEDGERS,
+        );
+
+        env.events().publish(
+            (Symbol::new(&env, "match"), symbol_short!("expired")),
             match_id,
         );
 
