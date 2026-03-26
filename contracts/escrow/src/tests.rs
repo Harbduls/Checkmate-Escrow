@@ -1223,3 +1223,56 @@ fn test_submit_result_blocked_when_paused() {
     let result = client.try_submit_result(&id, &Winner::Player1, &oracle);
     assert_eq!(result, Err(Ok(Error::ContractPaused)));
 }
+
+// ── unpause restores normal contract operation ────────────────────────────────
+
+/// Pause then unpause the contract, then call create_match and assert it
+/// succeeds with no ContractPaused error.
+#[test]
+fn test_unpause_allows_create_match() {
+    let (env, contract_id, _oracle, player1, player2, token, _admin) = setup();
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    // Pause the contract
+    client.pause();
+
+    // Confirm create_match is blocked while paused
+    let blocked = client.try_create_match(
+        &player1,
+        &player2,
+        &100,
+        &token,
+        &String::from_str(&env, "paused_game"),
+        &Platform::Lichess,
+    );
+    assert_eq!(
+        blocked,
+        Err(Ok(Error::ContractPaused)),
+        "create_match must be blocked when contract is paused"
+    );
+
+    // Unpause the contract
+    client.unpause();
+
+    // create_match must now succeed — no ContractPaused error
+    let result = client.try_create_match(
+        &player1,
+        &player2,
+        &100,
+        &token,
+        &String::from_str(&env, "unpaused_game"),
+        &Platform::Lichess,
+    );
+    assert!(
+        result.is_ok(),
+        "create_match must succeed after unpause, got: {:?}",
+        result
+    );
+
+    let id = result.unwrap();
+    let m = client.get_match(&id);
+    assert_eq!(m.state, MatchState::Pending);
+    assert_eq!(m.player1, player1);
+    assert_eq!(m.player2, player2);
+    assert_eq!(m.stake_amount, 100);
+}
