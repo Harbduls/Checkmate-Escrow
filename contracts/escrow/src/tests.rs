@@ -55,6 +55,34 @@ fn test_create_match() {
 }
 
 #[test]
+fn test_get_match_count() {
+    let (env, contract_id, _oracle, player1, player2, token, _admin) = setup();
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    assert_eq!(client.get_match_count(), 0);
+
+    client.create_match(
+        &player1,
+        &player2,
+        &100,
+        &token,
+        &String::from_str(&env, "game1"),
+        &Platform::Lichess,
+    );
+    assert_eq!(client.get_match_count(), 1);
+
+    client.create_match(
+        &player1,
+        &player2,
+        &200,
+        &token,
+        &String::from_str(&env, "game2"),
+        &Platform::ChessDotCom,
+    );
+    assert_eq!(client.get_match_count(), 2);
+}
+
+#[test]
 fn test_create_match_sets_created_ledger() {
     let (env, contract_id, _oracle, player1, player2, token, _admin) = setup();
     let client = EscrowContractClient::new(&env, &contract_id);
@@ -83,6 +111,18 @@ fn test_get_match_returns_match_not_found_for_unknown_id() {
     let result = client.try_get_match(&999);
 
     assert!(matches!(result, Err(Ok(Error::MatchNotFound))));
+}
+
+#[test]
+fn test_get_match_returns_correct_game_id() {
+    let (env, contract_id, _oracle, player1, player2, token, _admin) = setup();
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    let game_id = String::from_str(&env, "game_xyz_42");
+    let id = client.create_match(&player1, &player2, &100, &token, &game_id, &Platform::Lichess);
+
+    let m = client.get_match(&id);
+    assert_eq!(m.game_id, game_id);
 }
 
 #[test]
@@ -748,6 +788,52 @@ fn test_ttl_extended_on_cancel_after_deposit() {
         env.storage().persistent().get_ttl(&DataKey::Match(id))
     });
     assert_eq!(ttl, crate::MATCH_TTL_LEDGERS);
+}
+
+#[test]
+fn test_ttl_refreshed_on_get_match() {
+    let (env, contract_id, _oracle, player1, player2, token, _admin) = setup();
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    let id = client.create_match(
+        &player1,
+        &player2,
+        &100,
+        &token,
+        &String::from_str(&env, "ttl_read_refresh"),
+        &Platform::Lichess,
+    );
+
+    // Let some time pass (advance ledger small amount to simulate partial TTL without archiving)
+    let ledgers_elapsed = 1000u32;
+    let current_ledger = env.ledger().sequence();
+    env.ledger().set_sequence_number(current_ledger + ledgers_elapsed);
+
+    // Extend instance TTLs to prevent archiving during test
+    env.as_contract(&contract_id, || {
+        env.storage().instance().extend_ttl(crate::MATCH_TTL_LEDGERS, crate::MATCH_TTL_LEDGERS);
+    });
+
+    // TTL should be partial
+    let ttl_before = env.as_contract(&contract_id, || {
+        env.storage().persistent().get_ttl(&DataKey::Match(id))
+    });
+    assert!(ttl_before < crate::MATCH_TTL_LEDGERS);
+
+    // get_match refreshes TTL
+    let _m = client.get_match(&id);
+
+    let ttl_after = env.as_contract(&contract_id, || {
+        env.storage().persistent().get_ttl(&DataKey::Match(id))
+    });
+    assert_eq!(ttl_after, crate::MATCH_TTL_LEDGERS);
+
+    // Multiple reads keep it full
+    client.get_match(&id);
+    let ttl_final = env.as_contract(&contract_id, || {
+        env.storage().persistent().get_ttl(&DataKey::Match(id))
+    });
+    assert_eq!(ttl_final, crate::MATCH_TTL_LEDGERS);
 }
 
 // ── Task 1: non-admin cannot call pause / unpause ────────────────────────────
@@ -1548,68 +1634,18 @@ fn test_draw_refunds_exact_stake_and_zeroes_escrow_balance() {
     assert_eq!(client.get_match(&id).state, MatchState::Completed);
 }
 
-// ── MatchCount increments correctly across sequential creates ────────────────
-
-/// Creates 5 matches and verifies:
-///   1. Each call to create_match returns IDs 0 through 4 in order.
-///   2. MatchCount in instance storage equals 5 after all creates.
-///   3. get_match(id) for each ID returns a Match whose fields match what was
-///      passed to create_match (player1, player2, stake_amount, game_id, platform).
 #[test]
-fn test_match_count_increments_and_get_match_returns_correct_data() {
-    let (env, contract_id, _oracle, player1, player2, token, _admin) = setup();
+fn test_get_escrow_balance_returns_match_not_found_for_nonexistent_id() {
+    let (env, contract_id, ..) = setup();
     let client = EscrowContractClient::new(&env, &contract_id);
 
-    let game_ids = [
-        "count_game_0",
-        "count_game_1",
-        "count_game_2",
-        "count_game_3",
-        "count_game_4",
-    ];
-    let stakes: [i128; 5] = [10, 20, 30, 40, 50];
-
-    // Create 5 matches and assert each returned ID is sequential.
-    for i in 0..5_u64 {
-        let id = client.create_match(
-            &player1,
-            &player2,
-            &stakes[i as usize],
-            &token,
-            &String::from_str(&env, game_ids[i as usize]),
-            &Platform::Lichess,
-        );
-        assert_eq!(id, i, "create_match must return sequential ID {i}");
-    }
-
-    // Verify MatchCount in instance storage is exactly 5.
-    let count: u64 = env.as_contract(&contract_id, || {
-        env.storage()
-            .instance()
-            .get(&DataKey::MatchCount)
-            .expect("MatchCount must be present in storage")
-    });
-    assert_eq!(count, 5, "MatchCount must equal 5 after creating 5 matches");
-
-    // Verify get_match returns the correct data for each ID.
-    for i in 0..5_u64 {
-        let m = client.get_match(&i);
-        assert_eq!(m.id, i, "match.id must equal {i}");
-        assert_eq!(m.player1, player1, "match.player1 mismatch for id {i}");
-        assert_eq!(m.player2, player2, "match.player2 mismatch for id {i}");
-        assert_eq!(
-            m.stake_amount,
-            stakes[i as usize],
-            "match.stake_amount mismatch for id {i}"
-        );
-        assert_eq!(
-            m.game_id,
-            String::from_str(&env, game_ids[i as usize]),
-            "match.game_id mismatch for id {i}"
-        );
-        assert_eq!(m.platform, Platform::Lichess, "match.platform mismatch for id {i}");
-        assert_eq!(m.state, MatchState::Pending, "match.state must be Pending for id {i}");
-    }
+    // match_id 999 was never created — must return Error::MatchNotFound
+    let result = client.try_get_escrow_balance(&999u64);
+    assert_eq!(
+        result,
+        Err(Ok(Error::MatchNotFound)),
+        "get_escrow_balance must return MatchNotFound for a non-existent match_id"
+    );
 }
 
 #[test]

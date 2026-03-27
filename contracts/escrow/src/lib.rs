@@ -415,10 +415,16 @@ impl EscrowContract {
 
     /// Read a match by ID.
     pub fn get_match(env: Env, match_id: u64) -> Result<Match, Error> {
-        env.storage()
+        let m = env.storage()
             .persistent()
             .get(&DataKey::Match(match_id))
-            .ok_or(Error::MatchNotFound)
+            .ok_or(Error::MatchNotFound)?;
+        env.storage().persistent().extend_ttl(
+            &DataKey::Match(match_id),
+            MATCH_TTL_LEDGERS,
+            MATCH_TTL_LEDGERS,
+        );
+        Ok(m)
     }
 
     /// Check whether both players have deposited.
@@ -447,14 +453,15 @@ impl EscrowContract {
         Ok(depositors * m.stake_amount)
     }
 
-    /// Return all match IDs associated with the player.
-    pub fn get_player_matches(env: Env, player: Address) -> soroban_sdk::Vec<u64> {
+    /// Return the total number of matches created.
+    pub fn get_match_count(env: Env) -> u64 {
         env.storage()
-            .persistent()
-            .get(&DataKey::PlayerMatches(player))
-            .unwrap_or_else(|| soroban_sdk::Vec::new(&env))
+            .instance()
+            .get(&DataKey::MatchCount)
+            .unwrap_or(0)
     }
 }
 
 #[cfg(test)]
 mod tests;
+
