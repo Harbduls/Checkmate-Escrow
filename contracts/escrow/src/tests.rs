@@ -1561,6 +1561,15 @@ fn test_submit_result_blocked_when_paused() {
 }
 
 #[test]
+fn test_is_funded_returns_match_not_found_for_unknown_id() {
+    let (env, contract_id, _oracle, _player1, _player2, _token, _admin) = setup();
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    let result = client.try_is_funded(&999);
+    assert!(matches!(result, Err(Ok(Error::MatchNotFound))));
+}
+
+#[test]
 fn test_is_funded_false_after_only_player1_deposits() {
     let (env, contract_id, _oracle, player1, player2, token, _admin) = setup();
     let client = EscrowContractClient::new(&env, &contract_id);
