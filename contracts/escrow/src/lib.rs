@@ -51,6 +51,48 @@ impl EscrowContract {
         );
     }
 
+    /// Add a token to the allowlist — admin only.
+    pub fn add_allowed_token(env: Env, token: Address) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::Unauthorized)?;
+        admin.require_auth();
+
+        if env.storage().instance().has(&DataKey::AllowedToken(token.clone())) {
+            return Err(Error::TokenAlreadyAllowed);
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::AllowedToken(token), &true);
+        Ok(())
+    }
+
+    /// Remove a token from the allowlist — admin only.
+    pub fn remove_allowed_token(env: Env, token: Address) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::Unauthorized)?;
+        admin.require_auth();
+
+        env.storage()
+            .instance()
+            .remove(&DataKey::AllowedToken(token));
+        Ok(())
+    }
+
+    /// Check if a token is allowed.
+    pub fn is_token_allowed(env: Env, token: Address) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::AllowedToken(token))
+            .unwrap_or(false)
+    }
+
     /// Pause the contract — admin only. Blocks create_match, deposit, and submit_result.
     pub fn pause(env: Env) -> Result<(), Error> {
         let admin: Address = env
@@ -171,6 +213,16 @@ impl EscrowContract {
             if probe.is_err() {
                 return Err(Error::InvalidToken);
             }
+        }
+
+        // Validate token is in allowlist
+        if !env
+            .storage()
+            .instance()
+            .get(&DataKey::AllowedToken(token.clone()))
+            .unwrap_or(false)
+        {
+            return Err(Error::TokenNotAllowed);
         }
 
         let id: u64 = env
