@@ -1403,6 +1403,10 @@ fn test_unpause_emits_event() {
     );
 }
 
+// ── Issue #65: player cannot deposit twice for the same match ─────────────────
+
+#[test]
+fn test_player1_cannot_deposit_twice() {
 #[test]
 fn test_duplicate_game_id_rejected() {
     let (env, contract_id, _oracle, player1, player2, token, _admin) = setup();
@@ -1484,6 +1488,22 @@ fn test_expire_match_before_timeout_fails() {
         &player2,
         &100,
         &token,
+        &String::from_str(&env, "double_deposit_p1"),
+        &Platform::Lichess,
+    );
+
+    client.deposit(&id, &player1);
+
+    let result = client.try_deposit(&id, &player1);
+    assert_eq!(
+        result,
+        Err(Ok(Error::AlreadyFunded)),
+        "expected AlreadyFunded when player1 deposits a second time"
+    );
+}
+
+#[test]
+fn test_player2_cannot_deposit_twice() {
         &String::from_str(&env, "expire_early"),
         &Platform::Lichess,
     );
@@ -1695,6 +1715,17 @@ fn test_deposit_blocked_when_paused() {
         &player2,
         &100,
         &token,
+        &String::from_str(&env, "double_deposit_p2"),
+        &Platform::Lichess,
+    );
+
+    client.deposit(&id, &player2);
+
+    let result = client.try_deposit(&id, &player2);
+    assert_eq!(
+        result,
+        Err(Ok(Error::AlreadyFunded)),
+        "expected AlreadyFunded when player2 deposits a second time"
         &String::from_str(&env, "paused_deposit_game"),
         &Platform::Lichess,
     );
